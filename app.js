@@ -1,6 +1,6 @@
 'use strict';
 // ブローチ研究：自分だけの調査アーカイブ（iPhoneの中に保存し、iCloud Driveへはボタンで保存）
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const nowISO = () => { const d = new Date(); return new Date(d.getTime() - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 19); };
@@ -26,9 +26,9 @@ const LONG = new Set(['stones', 'metal', 'findings', 'back', 'condition', 'how',
 const S = { items: [], photos: [], sources: [], brands: [], materials: [], unconfirmed: [], kv: {}, ideas: [], srcNames: {} };
 const urlCache = new Map();
 async function loadAll() {
-  const [items, photos, sources, brands, materials, unconfirmed] = await Promise.all(
-    ['items', 'photos', 'sources', 'brands', 'materials', 'unconfirmed'].map(s => DB.all(s)));
-  Object.assign(S, { items, photos, sources, brands, materials, unconfirmed });
+  const names = ['items', 'photos', 'sources', 'brands', 'materials', 'unconfirmed', ...MORE_STORES];
+  const vals = await Promise.all(names.map(s => DB.all(s)));
+  names.forEach((n, i) => S[n] = vals[i]);
   for (const k of ['lastBackup', 'lastFullBackup', 'changes', 'ideas', 'srcNames', 'initialParts']) S.kv[k] = await DB.get('kv', k);
   S.ideas = S.kv.ideas || []; S.srcNames = S.kv.srcNames || {};
   S.sources.sort((a, b) => a.key.localeCompare(b.key));
@@ -51,7 +51,8 @@ async function origURL(pid) {
 // 描画後に data-thumb を持つ img に写真を入れる
 async function fillThumbs(root = document) {
   for (const img of root.querySelectorAll('img[data-thumb]')) {
-    const u = await thumbURL(img.dataset.thumb); if (u) img.src = u; else img.replaceWith(Object.assign(document.createElement('div'), { className: 'noimg', textContent: '写真はまだ読み込まれていません' }));
+    const pid = img.dataset.thumb; img.removeAttribute('data-thumb'); if (!pid) continue;
+    const u = await thumbURL(pid); if (u) img.src = u; else img.replaceWith(Object.assign(document.createElement('div'), { className: 'noimg', textContent: '写真はまだ読み込まれていません' }));
     img.removeAttribute('data-thumb');
   }
 }
@@ -146,6 +147,7 @@ function viewItem(id) {
    <a class="btn full" id="gem" href="https://gem.app/" target="_blank" rel="noopener">Gemで似たデザインを探す</a>
    <p class="small">Gemを押すと、検索語「${esc(fieldVal(it, 'search') || defaultQuery(it))}」をコピーしてから Gem を開きます。Gem の検索欄に貼り付けてください。</p></div>
   <div class="card"><h3>履歴</h3><ul class="hist">${[...it.history].reverse().map(h => `<li><time>${fmtDate(h.at)} ${h.at.slice(11, 16)}</time>${esc(h.text)}</li>`).join('')}</ul></div>
+  ${itemLinks(it)}
   <button class="btn danger" id="delitem">この作品を削除</button>`;
 }
 function defaultQuery(it) {
@@ -414,7 +416,7 @@ function viewSave() {
 async function doExport(withPhotos) {
   const box = $('#expprog'); box.hidden = false; const bar = box.querySelector('i'); const tx = $('#exptext');
   try {
-    const data = { format: 'brooch-research', version: 1, exportedAt: nowISO(), kind: withPhotos ? 'full' : 'text', items: S.items, photos: S.photos, sources: S.sources, brands: S.brands, materials: S.materials, unconfirmed: S.unconfirmed, ideas: S.ideas, srcNames: S.srcNames };
+    const data = { format: 'brooch-research', version: 1, exportedAt: nowISO(), kind: withPhotos ? 'full' : 'text', items: S.items, photos: S.photos, sources: S.sources, brands: S.brands, materials: S.materials, unconfirmed: S.unconfirmed, ideas: S.ideas, srcNames: S.srcNames, ...Object.fromEntries(MORE_STORES.map(k => [k, S[k]])) };
     const entries = [{ name: 'data.json', blob: new Blob([JSON.stringify(data)], { type: 'application/json' }) }];
     tx.textContent = '写真を集めています…';
     for (const p of S.photos) {
@@ -439,7 +441,7 @@ async function doExport(withPhotos) {
 async function doImport(files) {
   const box = $('#impprog'); if (box) box.hidden = false; const bar = box?.querySelector('i'); const tx = $('#imptext') || { textContent: '' };
   const prog = (t, r) => { if (bar) bar.style.width = (r * 100) + '%'; tx.textContent = t; toast(t, 4000); };
-  let nItems = 0, nPhotos = 0, nOrig = 0;
+  let nItems = 0, nPhotos = 0, nOrig = 0, nMore = 0;
   try {
     for (const [fi, file] of [...files].entries()) {
       prog(`${file.name} を開いています（${fi + 1}/${files.length}）`, 0);
@@ -455,6 +457,7 @@ async function doImport(files) {
         };
         nItems += await merge('items', d.items, 'id');
         nPhotos += await merge('photos', d.photos, 'id');
+        for (const k of MORE_STORES) if (d[k]) nMore += await merge(k, d[k], 'id');
         await merge('sources', d.sources, 'key'); await merge('brands', d.brands, 'n'); await merge('materials', d.materials, 'n');
         // 未確認リストは、手元で変えた状態を優先
         const uc = new Map(S.unconfirmed.map(u => [u.id, u])); const put = [];
@@ -477,8 +480,8 @@ async function doImport(files) {
     }
     if (!S.kv.lastBackup) await setKV('changes', 0);
     try { await navigator.storage?.persist?.(); } catch (e) { }
-    prog(`読み込みました（作品${nItems}件・写真の情報${nPhotos}件・元の写真${nOrig}枚）`, 1);
-    updateSaveChip(); setTimeout(() => { location.hash = 'items'; route(); }, 600);
+    prog('読み込みました（' + [nItems && `作品${nItems}件`, nPhotos && `写真の情報${nPhotos}件`, nOrig && `元の写真${nOrig}枚`, nMore && `調べるの記録${nMore}件`].filter(Boolean).join('・') + '）', 1);
+    updateSaveChip(); setTimeout(() => { location.hash = nMore && !nItems ? 'study' : 'items'; route(); }, 600);
   } catch (e) { prog('読み込めませんでした：' + e.message, 0); }
 }
 
@@ -486,7 +489,7 @@ async function doImport(files) {
 async function route() {
   const h = decodeURIComponent(location.hash.slice(1)) || 'items';
   const [a, b, c] = h.split('/');
-  const tab = { items: 'items', item: 'items', unsorted: 'items', dict: 'dict', brand: 'dict', mat: 'dict', sources: 'sources', source: 'sources', check: 'check', confirm: 'check', save: 'save' }[a] || 'items';
+  const tab = { ...MORE_TABS, items: 'items', item: 'items', unsorted: 'items', dict: 'dict', brand: 'dict', mat: 'dict', sources: 'study', source: 'study', check: 'check', confirm: 'check', save: 'save' }[a] || 'items';
   document.querySelectorAll('.tabs a').forEach(x => x.dataset.tab === tab ? x.setAttribute('aria-current', 'page') : x.removeAttribute('aria-current'));
   let html;
   if (!S.items.length && !S.sources.length && a !== 'save') html = viewWelcome();
@@ -501,6 +504,7 @@ async function route() {
   else if (a === 'check') html = viewCheck();
   else if (a === 'confirm') html = viewConfirm();
   else if (a === 'save') html = viewSave();
+  else if (MORE_VIEWS[a]) html = MORE_VIEWS[a](b, c, h);
   else html = viewItems();
   const main = $('#main'); main.innerHTML = html; bind(a, b, c); fillThumbs(main);
   if (route.last !== h) { window.scrollTo(0, 0); route.last = h; }
@@ -508,6 +512,7 @@ async function route() {
 }
 function bind(a, b, c) {
   const m = $('#main');
+  moreBind(a, b, c, m);
   const on = (sel, ev, fn) => m.querySelectorAll(sel).forEach(el => el[ev] = fn);
   on('#wimport', 'onclick', () => $('#pickZip').click());
   on('#import', 'onclick', () => $('#pickZip').click());

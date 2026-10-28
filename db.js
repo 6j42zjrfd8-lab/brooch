@@ -1,12 +1,12 @@
 // iPhoneの中（IndexedDB）にデータと写真を保存する。
 const DB = (() => {
   const NAME = 'brooch-research';
-  const STORES = ['items', 'photos', 'blobs', 'sources', 'brands', 'materials', 'unconfirmed', 'kv'];
+  const STORES = ['items', 'photos', 'blobs', 'sources', 'brands', 'materials', 'unconfirmed', 'kv', 'clues', 'questions', 'reading', 'timeline', 'prices', 'sets'];
   let dbp;
   function open() {
     if (dbp) return dbp;
     dbp = new Promise((res, rej) => {
-      const r = indexedDB.open(NAME, 1);
+      const r = indexedDB.open(NAME, 2);
       r.onupgradeneeded = () => {
         const db = r.result;
         for (const s of STORES) {
